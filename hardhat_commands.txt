@@ -1,0 +1,14 @@
+# 编译所有合约
+npx hardhat compile
+
+# 编译特定合约
+npx hardhat compile --contracts contracts/YourContract.sol
+
+# 运行测试
+npx hardhat test
+
+# 本地部署
+npx hardhat run scripts/deploy.js
+
+# 部署到测试网
+npx hardhat run scripts/deploy.js --network goerli

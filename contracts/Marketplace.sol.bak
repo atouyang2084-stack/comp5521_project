@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract Marketplace is ReentrancyGuard, Ownable {
+    struct Listing {
+        address seller;
+        uint256 price;
+        bool active;
+    }
+    
+    // 稳定币合约地址
+    address public stablecoin;
+    
+    mapping(address => mapping(uint256 => Listing)) public listings;
+    
+    event Listed(address indexed nftContract, uint256 indexed tokenId, address seller, uint256 price);
+    event Sold(address indexed nftContract, uint256 indexed tokenId, address buyer, uint256 price);
+    event Cancelled(address indexed nftContract, uint256 indexed tokenId, address seller);
+    
+    constructor(address _stablecoin) Ownable(msg.sender) {
+        stablecoin = _stablecoin;
+    }
+    
+    function listNFT(address nftContract, uint256 tokenId, uint256 price) external {
+        require(price > 0, "Price must be greater than 0");
+        require(IERC721(nftContract).ownerOf(tokenId) == msg.sender, "Not the owner");
+        require(IERC721(nftContract).isApprovedForAll(msg.sender, address(this)), "Marketplace not approved");
+        
+        listings[nftContract][tokenId] = Listing({
+            seller: msg.sender,
+            price: price,
+            active: true
+        });
+        
+        emit Listed(nftContract, tokenId, msg.sender, price);
+    }
+    
+    function buyNFT(address nftContract, uint256 tokenId) external nonReentrant {
+        Listing memory listing = listings[nftContract][tokenId];
+        require(listing.active, "Listing not active");
+        require(listing.seller != msg.sender, "Cannot buy your own NFT");
+        
+        // 转账稳定币从买家到卖家
+        require(
+            IERC20(stablecoin).transferFrom(msg.sender, listing.seller, listing.price),
+            "Token transfer failed"
+        );
+        
+        // 转账NFT从卖家到买家
+        IERC721(nftContract).safeTransferFrom(listing.seller, msg.sender, tokenId);
+        
+        // 删除listing
+        delete listings[nftContract][tokenId];
+        
+        emit Sold(nftContract, tokenId, msg.sender, listing.price);
+    }
+    
+    function cancelListing(address nftContract, uint256 tokenId) external {
+        Listing memory listing = listings[nftContract][tokenId];
+        require(listing.active, "Listing not active");
+        require(listing.seller == msg.sender, "Not the seller");
+        
+        delete listings[nftContract][tokenId];
+        
+        emit Cancelled(nftContract, tokenId, msg.sender);
+    }
+    
+    function getListing(address nftContract, uint256 tokenId) external view returns (Listing memory) {
+        return listings[nftContract][tokenId];
+    }
+}
