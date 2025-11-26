@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COMP5521 NFT Marketplace (Debug Mode)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/5.7.2/ethers.umd.min.js"></script>
+    <style>
+        :root { --primary: #00d26a; --bg: #121212; --card: #1e1e1e; --text: #ffffff; --error: #ff4444; }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        header { display: flex; justify-content: space-between; border-bottom: 1px solid #333; padding-bottom: 20px; margin-bottom: 20px; }
+        button { background: var(--primary); color: #000; border: none; padding: 10px 20px; border-radius: 5px; font-weight: bold; cursor: pointer; }
+        button:hover { opacity: 0.8; }
+        .section { background: var(--card); padding: 20px; border-radius: 10px; margin-bottom: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; }
+        .card { background: #2a2a2a; padding: 15px; border-radius: 8px; text-align: center; }
+        .card img { width: 100%; height: 150px; object-fit: cover; background: #000; border-radius: 4px; }
+        #statusLog { background: #000; color: #0f0; font-family: monospace; padding: 10px; height: 120px; overflow-y: scroll; border: 1px solid #333; border-radius: 5px; }
+        .error-msg { color: var(--error); font-weight: bold; background: rgba(255,0,0,0.1); padding: 10px; border-radius: 5px; }
+        input { width: 70%; padding: 5px; margin: 5px 0; background: #000; color: #fff; border: 1px solid #555; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>🛒 COMP5521 Market</h1>
+        <button id="connectBtn" onclick="connectWallet()">Connect Wallet</button>
+        <span id="addressDisplay" style="display:none; font-family:monospace; background:#333; padding:5px 10px; border-radius:5px;"></span>
+    </header>
+
+    <div id="statusLog">System Ready... Click Connect to start.</div>
+    <br>
+
+    <div class="section">
+        <h2>🛠️ Admin Tools</h2>
+        <button onclick="mintTokens()">🖨️ Mint 1000 C5D</button>
+        <button onclick="mintNFT()">🎨 Mint New NFT</button>
+    </div>
+
+    <div class="section">
+        <h2>👤 Your Assets</h2>
+        <p>💰 Balance: <strong id="tokenBalance" style="color:var(--primary)">-</strong> C5D</p>
+        <div id="myNftGrid" class="grid"><p>Connect wallet to view NFTs.</p></div>
+    </div>
+
+    <div class="section">
+        <h2>🏪 Marketplace <button onclick="refreshMarket()" style="font-size:0.8em; padding:5px 10px;">🔄 Refresh</button></h2>
+        <div id="marketGrid" class="grid"><p>No items listed.</p></div>
+    </div>
+</div>
+
+<script>
+    // ============================================================
+    // ⚠️ 检查点：请确保这里填的是你【最新一次】部署在 Sepolia 的地址
+    // ============================================================
+    const STABLECOIN_ADDRESS = "0x1F1C64f3cf6C6c5B671f4C8073042507E026a6BC";
+    const NFT_ADDRESS = "0xf59f70FD03465Fc24E91D39CCbd368A10E13a6Ee";
+    const MARKETPLACE_ADDRESS = "0x68CBD7B65feD959846BAeFE7C2b768624192dc5A";
+    // ============================================================
+
+    const ABI_COIN = ["function balanceOf(address) view returns (uint256)", "function mint(address to, uint256 amount) external", "function approve(address spender, uint256 amount) returns (bool)"];
+    const ABI_NFT = ["function safeMint(address to, string uri) external", "function tokenURI(uint256) view returns (string)", "function setApprovalForAll(address operator, bool approved) external", "function tokensOfOwner(address owner) view returns (uint256[])"];
+    const ABI_MARKET = ["function listNFT(address nft, uint256 id, uint256 price) external", "function buyNFT(address nft, uint256 id) external", "function cancelListing(address nft, uint256 id) external", "function listings(address nft, uint256 id) view returns (address seller, address nft, uint256 id, uint256 price, bool active)"];
+
+    let provider, signer, userAddress;
+    let coinContract, nftContract, marketContract;
+
+    function log(msg, isError = false) {
+        const el = document.getElementById("statusLog");
+        const color = isError ? "red" : "#0f0";
+        el.innerHTML = `<span style="color:${color}">[${new Date().toLocaleTimeString()}] ${msg}</span><br>` + el.innerHTML;
+    }
+
+    async function connectWallet() {
+        try {
+            if (!window.ethereum) throw new Error("No MetaMask found!");
+            provider = new ethers.providers.Web3Provider(window.ethereum);
+            await provider.send("eth_requestAccounts", []);
+            signer = provider.getSigner();
+            userAddress = await signer.getAddress();
+
+            const network = await provider.getNetwork();
+            log(`Connected: ${userAddress} (Chain ID: ${network.chainId})`);
+
+            if(network.chainId !== 11155111 && network.chainId !== 31337) {
+                log("⚠️ WARNING: You are not on Sepolia or Localhost!", true);
+            }
+
+            // Init Contracts
+            coinContract = new ethers.Contract(STABLECOIN_ADDRESS, ABI_COIN, signer);
+            nftContract = new ethers.Contract(NFT_ADDRESS, ABI_NFT, signer);
+            marketContract = new ethers.Contract(MARKETPLACE_ADDRESS, ABI_MARKET, signer);
+
+            document.getElementById("connectBtn").style.display = "none";
+            document.getElementById("addressDisplay").style.display = "inline";
+            document.getElementById("addressDisplay").innerText = userAddress;
+
+            refreshData();
+        } catch (err) {
+            log("Connect Error: " + err.message, true);
+        }
+    }
+
+    async function refreshData() {
+        if (!userAddress) return;
+
+        // 1. Get Balance
+        try {
+            const bal = await coinContract.balanceOf(userAddress);
+            document.getElementById("tokenBalance").innerText = ethers.utils.formatEther(bal);
+        } catch (e) {
+            console.error(e);
+            log("Failed to fetch C5D Balance. Check Address!", true);
+        }
+
+        // 2. Get NFTs
+        const nftContainer = document.getElementById("myNftGrid");
+        nftContainer.innerHTML = "Loading...";
+        try {
+            const ids = await nftContract.tokensOfOwner(userAddress);
+            nftContainer.innerHTML = ids.length ? "" : "<p>You own 0 NFTs.</p>";
+
+            for (let id of ids) {
+                try {
+                    const listing = await marketContract.listings(NFT_ADDRESS, id);
+                    if (listing.active) continue; // Skip listed items
+
+                    let uri = await nftContract.tokenURI(id);
+                    if(!uri || uri === "") uri = "https://via.placeholder.com/150?text=No+Image";
+
+                    const div = document.createElement("div");
+                    div.className = "card";
+                    div.innerHTML = `
+                        <img src="${uri}" onerror="this.src='https://via.placeholder.com/150?text=Error'">
+                        <h3>ID: ${id}</h3>
+                        <input type="number" id="price-${id}" placeholder="Price">
+                        <button onclick="listNFT('${id}')">List</button>
+                    `;
+                    nftContainer.appendChild(div);
+                } catch(innerErr) {
+                    console.error(innerErr);
+                }
+            }
+        } catch (e) {
+            console.error(e);
+            nftContainer.innerHTML = `<div class="error-msg">Error loading NFTs.<br>Details: ${e.message}</div>`;
+            log("NFT Load Error. See console for details.", true);
+        }
+
+        // 3. Refresh Market
+        refreshMarket();
+    }
+
+    async function refreshMarket() {
+        const container = document.getElementById("marketGrid");
+        container.innerHTML = "Scanning...";
+        let found = 0;
+        let html = "";
+
+        // Scan IDs 0 to 10 for demo
+        for(let i=0; i<=10; i++) {
+            try {
+                const listing = await marketContract.listings(NFT_ADDRESS, i);
+                if(listing.active) {
+                    found++;
+                    let uri = "https://via.placeholder.com/150";
+                    try { uri = await nftContract.tokenURI(i); } catch(e){}
+
+                    const isMine = listing.seller.toLowerCase() === userAddress.toLowerCase();
+                    const price = ethers.utils.formatEther(listing.price);
+
+                    html += `<div class="card">
+                        <img src="${uri}">
+                        <h3>ID: ${i}</h3>
+                        <p>${price} C5D</p>
+                        ${isMine ?
+                            `<button style="background:red" onclick="cancelListing('${i}')">Cancel</button>` :
+                            `<button onclick="buyNFT('${i}', '${price}')">Buy</button>`
+                        }
+                    </div>`;
+                }
+            } catch(e) {}
+        }
+        container.innerHTML = found ? html : "<p>No active listings found (Scanning IDs 0-10).</p>";
+    }
+
+    async function mintTokens() {
+        try {
+            const tx = await coinContract.mint(userAddress, ethers.utils.parseEther("1000"));
+            log("Minting C5D... Please wait.");
+            await tx.wait();
+            log("✅ C5D Minted!");
+            refreshData();
+        } catch(e) { log("Mint Error: " + (e.reason || e.message), true); }
+    }
+
+    async function mintNFT() {
+        try {
+            const tx = await nftContract.safeMint(userAddress, "https://robohash.org/" + Date.now());
+            log("Minting NFT... Please wait.");
+            await tx.wait();
+            log("✅ NFT Minted!");
+            refreshData();
+        } catch(e) { log("NFT Mint Error: " + (e.reason || e.message), true); }
+    }
+
+    async function listNFT(id) {
+        try {
+            const price = document.getElementById("price-"+id).value;
+            if(!price) return alert("Enter price");
+
+            log("Approving NFT...");
+            const appTx = await nftContract.setApprovalForAll(MARKETPLACE_ADDRESS, true);
+            await appTx.wait();
+
+            log("Listing...");
+            const tx = await marketContract.listNFT(NFT_ADDRESS, id, ethers.utils.parseEther(price));
+            await tx.wait();
+            log("✅ Listed!");
+            refreshData();
+        } catch(e) { log("List Error: " + (e.reason || e.message), true); }
+    }
+
+    async function buyNFT(id, price) {
+        try {
+            log("Approving C5D...");
+            const appTx = await coinContract.approve(MARKETPLACE_ADDRESS, ethers.utils.parseEther(price));
+            await appTx.wait();
+
+            log("Buying...");
+            const tx = await marketContract.buyNFT(NFT_ADDRESS, id);
+            await tx.wait();
+            log("✅ Bought!");
+            refreshData();
+        } catch(e) { log("Buy Error: " + (e.reason || e.message), true); }
+    }
+
+    async function cancelListing(id) {
+        try {
+            const tx = await marketContract.cancelListing(NFT_ADDRESS, id);
+            await tx.wait();
+            log("✅ Cancelled!");
+            refreshData();
+        } catch(e) { log("Cancel Error: " + (e.reason || e.message), true); }
+    }
+</script>
+</body>
+</html>
